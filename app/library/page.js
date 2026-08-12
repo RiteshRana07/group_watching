@@ -10,160 +10,131 @@ function mb(bytes) {
 
 function formatMB(bytes) {
   const value = mb(bytes);
-
   return value >= 10
     ? value.toFixed(0)
     : value.toFixed(1);
 }
 
 /*
- * ---------------------------------------------------------
- * Upload file to our Next.js API
- * ---------------------------------------------------------
- */
+=========================================================
+UPLOAD VIDEO
+=========================================================
 
-function uploadToServer(file, title, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
+Browser
+   ↓
+Next.js /api/storage/upload
+   ↓
+pCloud uploadfile
+   ↓
+fileId + storageRef
+=========================================================
+*/
 
-    const form = new FormData();
+async function uploadToPCloud(
+  file,
+  title,
+  onProgress
+) {
+  const formData =
+    new FormData();
 
-    form.append("title", title);
+  formData.append(
+    "file",
+    file
+  );
 
-    form.append(
-      "file",
-      file,
-      file.name
-    );
+  formData.append(
+    "title",
+    title
+  );
 
-    let finished = false;
+  /*
+   * IMPORTANT:
+   *
+   * Do NOT manually set Content-Type here.
+   *
+   * Browser automatically creates:
+   *
+   * multipart/form-data;
+   * boundary=...
+   */
 
-    function fail(message) {
-      if (finished) return;
-
-      finished = true;
-
-      reject(
-        new Error(
-          message || "Upload failed"
-        )
-      );
-    }
-
-    /*
-     * Browser -> Next.js progress.
-     */
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress?.(
-          Math.min(
-            file.size,
-            event.loaded
-          )
-        );
-      }
-    };
-
-    xhr.onerror = () => {
-      fail(
-        "Could not connect to the WatchTogether server."
-      );
-    };
-
-    xhr.onabort = () => {
-      fail(
-        "Upload was cancelled."
-      );
-    };
-
-    xhr.ontimeout = () => {
-      fail(
-        "Upload timed out. Please try again."
-      );
-    };
-
-    xhr.onload = () => {
-      if (finished) return;
-
-      let data = {};
-
-      try {
-        data = JSON.parse(
-          xhr.responseText || "{}"
-        );
-      } catch {
-        fail(
-          `Server returned invalid JSON (HTTP ${xhr.status}).`
-        );
-
-        return;
-      }
-
-      if (
-        xhr.status < 200 ||
-        xhr.status >= 300
-      ) {
-        fail(
-          data.error ||
-          `Upload failed (HTTP ${xhr.status}).`
-        );
-
-        return;
-      }
-
-      if (!data.ok) {
-        fail(
-          data.error ||
-          "pCloud upload failed."
-        );
-
-        return;
-      }
-
-      finished = true;
-
-      onProgress?.(file.size);
-
-      resolve(data);
-    };
-
-    /*
-     * Give large video uploads plenty of time.
-     */
-    xhr.timeout =
-      2 * 60 * 60 * 1000;
-
-    /*
-     * Send cookies so Next.js can identify
-     * the logged-in user.
-     */
-    xhr.open(
-      "POST",
+  const response =
+    await fetch(
       "/api/storage/upload",
-      true
+      {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      }
     );
 
-    xhr.withCredentials = true;
+  /*
+   * Read response as text first.
+   * This prevents JSON.parse errors when
+   * the server returns an HTML/error response.
+   */
 
-    try {
-      xhr.send(form);
-    } catch (error) {
-      fail(
-        error?.message ||
-        "Could not start upload."
-      );
-    }
-  });
+  const text =
+    await response.text();
+
+  let data = {};
+
+  try {
+    data = JSON.parse(
+      text || "{}"
+    );
+  } catch {
+    throw new Error(
+      `Server returned invalid JSON (HTTP ${response.status}): ${text.slice(
+        0,
+        300
+      )}`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+        `Upload failed (HTTP ${response.status})`
+    );
+  }
+
+  if (!data.ok) {
+    throw new Error(
+      data.error ||
+        "Upload failed."
+    );
+  }
+
+  /*
+   * The current route uploads the complete
+   * file before returning the response.
+   *
+   * Therefore we can mark progress as complete.
+   */
+
+  onProgress?.(
+    file.size
+  );
+
+  console.log(
+    "[library] pCloud upload completed:",
+    data
+  );
+
+  return data;
 }
 
 /*
- * ---------------------------------------------------------
- * Library page
- * ---------------------------------------------------------
- */
+=========================================================
+LIBRARY PAGE
+=========================================================
+*/
 
 export default function LibraryPage() {
-  const user = useCurrentUser();
+  const user =
+    useCurrentUser();
 
   const [movies, setMovies] =
     useState(undefined);
@@ -187,10 +158,10 @@ export default function LibraryPage() {
     useState("");
 
   /*
-   * -------------------------------------------------------
-   * Progress
-   * -------------------------------------------------------
-   */
+  ========================================================
+  PROGRESS
+  ========================================================
+  */
 
   const progressPercent =
     useMemo(() => {
@@ -200,8 +171,7 @@ export default function LibraryPage() {
 
       return Math.min(
         100,
-        (progressBytes / file.size) *
-          100
+        (progressBytes / file.size) * 100
       );
     }, [
       file,
@@ -209,20 +179,21 @@ export default function LibraryPage() {
     ]);
 
   /*
-   * -------------------------------------------------------
-   * Load movies
-   * -------------------------------------------------------
-   */
+  ========================================================
+  LOAD MOVIES
+  ========================================================
+  */
 
   async function loadMovies() {
     try {
-      const res = await fetch(
-        "/api/movies",
-        {
-          cache: "no-store",
-          credentials: "include",
-        }
-      );
+      const res =
+        await fetch(
+          "/api/movies",
+          {
+            cache: "no-store",
+            credentials: "include",
+          }
+        );
 
       const data =
         await res.json();
@@ -230,6 +201,11 @@ export default function LibraryPage() {
       if (res.ok) {
         setMovies(
           data.movies || []
+        );
+      } else {
+        console.error(
+          "Failed to load movies:",
+          data.error
         );
       }
     } catch (error) {
@@ -241,39 +217,56 @@ export default function LibraryPage() {
   }
 
   /*
-   * -------------------------------------------------------
-   * Save movie in database
-   * -------------------------------------------------------
-   */
+  ========================================================
+  SAVE MOVIE IN DATABASE
+  ========================================================
+  */
 
   async function saveMovie(
     titleValue,
     storageRefValue
   ) {
-    const res = await fetch(
-      "/api/movies",
-      {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-        body: JSON.stringify({
-          title: titleValue,
-          videoUrl:
-            storageRefValue,
-        }),
-      }
-    );
+    const res =
+      await fetch(
+        "/api/movies",
+        {
+          method: "POST",
+          credentials: "include",
 
-    const data =
-      await res.json();
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            title:
+              titleValue,
+
+            videoUrl:
+              storageRefValue,
+          }),
+        }
+      );
+
+    const text =
+      await res.text();
+
+    let data = {};
+
+    try {
+      data = JSON.parse(
+        text || "{}"
+      );
+    } catch {
+      throw new Error(
+        `Movie API returned invalid JSON (HTTP ${res.status})`
+      );
+    }
 
     if (!res.ok) {
       throw new Error(
         data.error ||
-        "Couldn't save the video to your library"
+          "Couldn't save the video to your library"
       );
     }
 
@@ -281,10 +274,10 @@ export default function LibraryPage() {
   }
 
   /*
-   * -------------------------------------------------------
-   * Initial load
-   * -------------------------------------------------------
-   */
+  ========================================================
+  INITIAL LOAD
+  ========================================================
+  */
 
   useEffect(() => {
     if (!user) {
@@ -294,9 +287,10 @@ export default function LibraryPage() {
     loadMovies();
 
     /*
-     * Recover movie if browser was interrupted
-     * after pCloud upload.
+     * Recover pending movie if browser
+     * was interrupted after pCloud upload.
      */
+
     try {
       const pending =
         JSON.parse(
@@ -319,9 +313,7 @@ export default function LibraryPage() {
             );
           })
           .then(loadMovies)
-          .catch(
-            console.error
-          );
+          .catch(console.error);
       }
     } catch (error) {
       console.error(
@@ -332,10 +324,10 @@ export default function LibraryPage() {
   }, [user]);
 
   /*
-   * -------------------------------------------------------
-   * Reset form
-   * -------------------------------------------------------
-   */
+  ========================================================
+  RESET FORM
+  ========================================================
+  */
 
   function resetUpload() {
     setTitle("");
@@ -346,29 +338,37 @@ export default function LibraryPage() {
   }
 
   /*
-   * -------------------------------------------------------
-   * Upload
-   * -------------------------------------------------------
-   */
+  ========================================================
+  UPLOAD
+  ========================================================
+  */
 
-  async function handleUpload(event) {
+  async function handleUpload(
+    event
+  ) {
     event.preventDefault();
 
     setError("");
+
+    /*
+     * Validate title
+     */
 
     if (!title.trim()) {
       setError(
         "Give the movie a title"
       );
-
       return;
     }
+
+    /*
+     * Validate file
+     */
 
     if (!file) {
       setError(
         "Choose a video file"
       );
-
       return;
     }
 
@@ -377,19 +377,23 @@ export default function LibraryPage() {
 
     try {
       /*
-       * ---------------------------------------------------
-       * One upload request.
-       *
-       * Browser
-       *    ↓
-       * Next.js
-       *    ↓
-       * pCloud uploadfile
-       * ---------------------------------------------------
+       * ====================================================
+       * STEP 1
+       * Upload video to pCloud
+       * ====================================================
        */
 
+      console.log(
+        "[library] starting upload:",
+        {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+        }
+      );
+
       const result =
-        await uploadToServer(
+        await uploadToPCloud(
           file,
           title.trim(),
           (uploaded) => {
@@ -400,9 +404,16 @@ export default function LibraryPage() {
         );
 
       console.log(
-        "[library] pCloud upload result:",
+        "[library] upload result:",
         result
       );
+
+      /*
+       * ====================================================
+       * STEP 2
+       * Get storage reference
+       * ====================================================
+       */
 
       const storageRef =
         result.storageRef;
@@ -414,27 +425,41 @@ export default function LibraryPage() {
       }
 
       /*
-       * Save pending state before database operation.
+       * ====================================================
+       * STEP 3
+       * Save pending state
+       * ====================================================
        */
+
       localStorage.setItem(
         "wt_pending_movie",
         JSON.stringify({
-          title: title.trim(),
+          title:
+            title.trim(),
+
           storageRef,
         })
       );
 
       /*
-       * Save movie in database.
+       * ====================================================
+       * STEP 4
+       * Save movie in database
+       * ====================================================
        */
+
       await saveMovie(
         title.trim(),
         storageRef
       );
 
       /*
-       * Database succeeded.
+       * ====================================================
+       * STEP 5
+       * Database succeeded
+       * ====================================================
        */
+
       localStorage.removeItem(
         "wt_pending_movie"
       );
@@ -443,9 +468,18 @@ export default function LibraryPage() {
         file.size
       );
 
+      /*
+       * Refresh library
+       */
+
       await loadMovies();
 
+      /*
+       * Reset form
+       */
+
       resetUpload();
+
     } catch (err) {
       console.error(
         "[library] upload error:",
@@ -454,7 +488,7 @@ export default function LibraryPage() {
 
       setError(
         err?.message ||
-        "Something went wrong while uploading"
+          "Something went wrong while uploading"
       );
     } finally {
       setBusy(false);
@@ -462,12 +496,14 @@ export default function LibraryPage() {
   }
 
   /*
-   * -------------------------------------------------------
-   * Delete movie
-   * -------------------------------------------------------
-   */
+  ========================================================
+  DELETE MOVIE
+  ========================================================
+  */
 
-  async function handleDelete(id) {
+  async function handleDelete(
+    id
+  ) {
     if (
       !confirm(
         "Remove this movie from your library?"
@@ -490,51 +526,57 @@ export default function LibraryPage() {
         const data =
           await res
             .json()
-            .catch(() => ({}));
+            .catch(
+              () => ({})
+            );
 
         alert(
           data.error ||
-          "Couldn't remove the movie"
+            "Couldn't remove the movie"
         );
 
         return;
       }
 
       await loadMovies();
+
     } catch (error) {
       alert(
         error?.message ||
-        "Couldn't remove the movie"
+          "Couldn't remove the movie"
       );
     }
   }
 
   /*
-   * -------------------------------------------------------
-   * Not logged in
-   * -------------------------------------------------------
-   */
+  ========================================================
+  NOT LOGGED IN
+  ========================================================
+  */
 
   if (!user) {
     return null;
   }
 
   /*
-   * -------------------------------------------------------
-   * UI
-   * -------------------------------------------------------
-   */
+  ========================================================
+  UI
+  ========================================================
+  */
 
   return (
     <main>
-      <Nav username={user.username} />
+      <Nav
+        username={
+          user.username
+        }
+      />
 
       <div className="max-w-6xl mx-auto px-6 py-10">
 
-        {/* Header */}
+        {/* HEADER */}
 
         <div className="flex items-start justify-between mb-8">
-
           <div>
             <p className="text-xs uppercase tracking-wide text-accent mb-1">
               Your collection
@@ -545,30 +587,35 @@ export default function LibraryPage() {
             </h1>
 
             <p className="text-sm text-neutral-500">
-              Everything you've uploaded — ready for a private watch room.
+              Everything you've uploaded —
+              ready for a private watch room.
             </p>
           </div>
 
           <button
             onClick={() =>
               setShowForm(
-                (value) => !value
+                (value) =>
+                  !value
               )
             }
             className="px-5 py-2.5 bg-accent rounded-lg font-medium hover:opacity-90 whitespace-nowrap"
           >
             + Upload movie
           </button>
-
         </div>
 
-        {/* Upload form */}
+        {/* UPLOAD FORM */}
 
         {showForm && (
           <form
-            onSubmit={handleUpload}
+            onSubmit={
+              handleUpload
+            }
             className="mb-8 p-6 rounded-xl bg-neutral-900 border border-neutral-800 space-y-4"
           >
+
+            {/* TITLE */}
 
             <input
               className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2"
@@ -581,6 +628,8 @@ export default function LibraryPage() {
                 )
               }
             />
+
+            {/* FILE */}
 
             <input
               type="file"
@@ -595,6 +644,8 @@ export default function LibraryPage() {
               className="w-full text-sm text-neutral-400"
             />
 
+            {/* SELECTED FILE */}
+
             {file && (
               <p className="text-xs text-neutral-500">
                 Selected:{" "}
@@ -606,11 +657,15 @@ export default function LibraryPage() {
               </p>
             )}
 
+            {/* ERROR */}
+
             {error && (
               <p className="text-sm text-red-400">
                 {error}
               </p>
             )}
+
+            {/* PROGRESS */}
 
             {busy && file && (
               <div className="space-y-2">
@@ -652,6 +707,8 @@ export default function LibraryPage() {
               </div>
             )}
 
+            {/* SUBMIT */}
+
             <button
               type="submit"
               disabled={busy}
@@ -661,7 +718,8 @@ export default function LibraryPage() {
                 ? `Uploading ${formatMB(
                     progressBytes
                   )} MB / ${formatMB(
-                    file?.size || 0
+                    file?.size ||
+                      0
                   )} MB`
                 : "Add to library"}
             </button>
@@ -669,7 +727,7 @@ export default function LibraryPage() {
           </form>
         )}
 
-        {/* Empty library */}
+        {/* EMPTY LIBRARY */}
 
         {movies &&
           movies.length === 0 && (
@@ -680,7 +738,9 @@ export default function LibraryPage() {
               </p>
 
               <p className="text-sm text-neutral-500 mb-6">
-                Upload a legally owned movie file to start your first private watch party.
+                Upload a legally owned movie
+                file to start your first
+                private watch party.
               </p>
 
               <button
@@ -695,48 +755,54 @@ export default function LibraryPage() {
             </div>
           )}
 
-        {/* Movie library */}
+        {/* MOVIE LIBRARY */}
 
         {movies &&
           movies.length > 0 && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
-              {movies.map((movie) => (
-                <div
-                  key={movie.id}
-                  className="p-5 rounded-xl bg-neutral-900 border border-neutral-800 flex flex-col gap-3"
-                >
-
-                  <div className="aspect-video rounded-lg bg-neutral-950 flex items-center justify-center text-neutral-700 text-3xl">
-                    🎬
-                  </div>
-
-                  <p className="font-medium truncate">
-                    {movie.title}
-                  </p>
-
-                  <a
-                    href={`/rooms/create?movieId=${encodeURIComponent(
+              {movies.map(
+                (movie) => (
+                  <div
+                    key={
                       movie.id
-                    )}`}
-                    className="text-xs text-accent hover:underline"
-                  >
-                    Use in room
-                  </a>
-
-                  <button
-                    onClick={() =>
-                      handleDelete(
-                        movie.id
-                      )
                     }
-                    className="text-xs text-neutral-500 hover:text-red-400 text-left"
+                    className="p-5 rounded-xl bg-neutral-900 border border-neutral-800 flex flex-col gap-3"
                   >
-                    Remove
-                  </button>
 
-                </div>
-              ))}
+                    <div className="aspect-video rounded-lg bg-neutral-950 flex items-center justify-center text-neutral-700 text-3xl">
+                      🎬
+                    </div>
+
+                    <p className="font-medium truncate">
+                      {
+                        movie.title
+                      }
+                    </p>
+
+                    <a
+                      href={`/rooms/create?movieId=${encodeURIComponent(
+                        movie.id
+                      )}`}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      Use in room
+                    </a>
+
+                    <button
+                      onClick={() =>
+                        handleDelete(
+                          movie.id
+                        )
+                      }
+                      className="text-xs text-neutral-500 hover:text-red-400 text-left"
+                    >
+                      Remove
+                    </button>
+
+                  </div>
+                )
+              )}
 
             </div>
           )}

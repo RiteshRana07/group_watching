@@ -18,15 +18,16 @@ const {
 export const runtime = "nodejs";
 
 /*
- * Get logged-in user
- */
+=========================================================
+AUTH
+=========================================================
+*/
+
 function getCurrentUser(request) {
   try {
     let token = null;
 
-    /*
-     * Try Next.js cookies()
-     */
+    // Try Next.js cookies
     const cookieStore = cookies();
 
     const cookieToken =
@@ -36,9 +37,7 @@ function getCurrentUser(request) {
       token = cookieToken;
     }
 
-    /*
-     * Fallback to raw Cookie header
-     */
+    // Fallback to raw Cookie header
     if (!token) {
       const cookieHeader =
         request.headers.get("cookie") || "";
@@ -69,8 +68,11 @@ function getCurrentUser(request) {
 }
 
 /*
- * Error response
- */
+=========================================================
+ERROR HANDLER
+=========================================================
+*/
+
 function jsonError(error, status = 400) {
   console.error(
     "[storage upload]",
@@ -88,8 +90,171 @@ function jsonError(error, status = 400) {
 }
 
 /*
- * POST /api/storage/upload
- */
+=========================================================
+PCLOUD CONFIG
+=========================================================
+*/
+
+function getPCloudConfig() {
+  const accessToken =
+    process.env.PCLOUD_ACCESS_TOKEN;
+
+  const apiHost = (
+    process.env.PCLOUD_API_HOST ||
+    "https://api.pcloud.com"
+  ).replace(/\/$/, "");
+
+  if (!accessToken) {
+    throw new Error(
+      "PCLOUD_ACCESS_TOKEN is missing"
+    );
+  }
+
+  return {
+    accessToken,
+    apiHost,
+  };
+}
+
+/*
+=========================================================
+UPLOAD FILE DIRECTLY TO PCLOUD
+=========================================================
+*/
+
+async function uploadFileToPCloud({
+  file,
+  folderId,
+  objectName,
+  contentType,
+}) {
+  const {
+    accessToken,
+    apiHost,
+  } = getPCloudConfig();
+
+  const arrayBuffer =
+    await file.arrayBuffer();
+
+  const blob = new Blob(
+    [arrayBuffer],
+    {
+      type:
+        contentType ||
+        "application/octet-stream",
+    }
+  );
+
+  const form =
+    new FormData();
+
+  /*
+   * pCloud requires folderid before file.
+   */
+  form.append(
+    "folderid",
+    String(folderId)
+  );
+
+  form.append(
+    "filename",
+    objectName
+  );
+
+  form.append(
+    "nopartial",
+    "1"
+  );
+
+  form.append(
+    "file",
+    blob,
+    objectName
+  );
+
+  const uploadUrl =
+    `${apiHost}/uploadfile?access_token=${encodeURIComponent(
+      accessToken
+    )}`;
+
+  console.log(
+    "[storage upload] uploading to pCloud:",
+    {
+      folderId,
+      objectName,
+      size: file.size,
+    }
+  );
+
+  const response =
+    await fetch(
+      uploadUrl,
+      {
+        method: "POST",
+        body: form,
+        cache: "no-store",
+      }
+    );
+
+  const text =
+    await response.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `pCloud returned invalid JSON (HTTP ${response.status})`
+    );
+  }
+
+  console.log(
+    "[storage upload] pCloud result:",
+    {
+      status: response.status,
+      result: data.result,
+      error: data.error,
+    }
+  );
+
+  if (
+    !response.ok ||
+    Number(data.result) !== 0
+  ) {
+    throw new Error(
+      data.error ||
+        `pCloud upload failed (result ${data.result})`
+    );
+  }
+
+  const metadata =
+    Array.isArray(data.metadata)
+      ? data.metadata[0]
+      : null;
+
+  const fileId =
+    metadata?.fileid ||
+    data.fileids?.[0];
+
+  if (!fileId) {
+    throw new Error(
+      "pCloud upload succeeded but no file ID was returned"
+    );
+  }
+
+  return {
+    fileId,
+    metadata,
+  };
+}
+
+/*
+=========================================================
+POST /api/storage/upload
+=========================================================
+*/
+
 export async function POST(request) {
   const user =
     getCurrentUser(request);
@@ -103,7 +268,8 @@ export async function POST(request) {
   if (!user) {
     return NextResponse.json(
       {
-        error: "Not signed in",
+        error:
+          "Not signed in",
       },
       {
         status: 401,
@@ -113,8 +279,15 @@ export async function POST(request) {
 
   try {
     /*
-     * Read multipart/form-data
+     * IMPORTANT:
+     *
+     * This route now expects multipart/form-data.
+     *
+     * The browser sends:
+     *   file
+     *   title
      */
+
     const formData =
       await request.formData();
 
@@ -123,7 +296,8 @@ export async function POST(request) {
 
     const title =
       String(
-        formData.get("title") || ""
+        formData.get("title") ||
+          ""
       ).trim();
 
     if (!file) {
@@ -131,6 +305,21 @@ export async function POST(request) {
         {
           error:
             "Video file is required",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    if (
+      typeof file.arrayBuffer !==
+      "function"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid uploaded file",
         },
         {
           status: 400,
@@ -153,8 +342,10 @@ export async function POST(request) {
     /*
      * File information
      */
+
     const filename =
-      file.name || "video.mp4";
+      file.name ||
+      "video.mp4";
 
     const contentType =
       file.type ||
@@ -181,6 +372,7 @@ export async function POST(request) {
     /*
      * Validate video
      */
+
     validateVideo({
       filename,
       contentType,
@@ -190,6 +382,7 @@ export async function POST(request) {
     /*
      * Get /WatchTogether folder
      */
+
     const folderId =
       await ensureFolder();
 
@@ -199,8 +392,9 @@ export async function POST(request) {
     );
 
     /*
-     * Create unique filename
+     * Generate unique filename
      */
+
     const objectName =
       makeObjectName(
         user.userId,
@@ -213,138 +407,32 @@ export async function POST(request) {
     );
 
     /*
-     * pCloud configuration
+     * Upload directly to pCloud
      */
-    const accessToken =
-      process.env.PCLOUD_ACCESS_TOKEN;
 
-    const apiHost = (
-      process.env.PCLOUD_API_HOST ||
-      "https://api.pcloud.com"
-    ).replace(/\/$/, "");
-
-    if (!accessToken) {
-      throw new Error(
-        "PCLOUD_ACCESS_TOKEN is missing"
-      );
-    }
-
-    /*
-     * Convert uploaded file
-     * into Blob
-     */
-    const arrayBuffer =
-      await file.arrayBuffer();
-
-    const blob = new Blob(
-      [arrayBuffer],
-      {
-        type: contentType,
-      }
-    );
-
-    /*
-     * Create pCloud multipart form
-     */
-    const pcloudForm =
-      new FormData();
-
-    pcloudForm.append(
-      "folderid",
-      String(folderId)
-    );
-
-    pcloudForm.append(
-      "filename",
-      objectName
-    );
-
-    pcloudForm.append(
-      "file",
-      blob,
-      objectName
-    );
-
-    /*
-     * pCloud uploadfile API
-     */
-    const uploadUrl =
-      `${apiHost}/uploadfile?access_token=${encodeURIComponent(
-        accessToken
-      )}`;
-
-    console.log(
-      "[storage upload] sending file to pCloud..."
-    );
-
-    const response =
-      await fetch(
-        uploadUrl,
-        {
-          method: "POST",
-          body: pcloudForm,
-          cache: "no-store",
-        }
-      );
-
-    const text =
-      await response.text();
-
-    let data;
-
-    try {
-      data =
-        JSON.parse(text);
-    } catch {
-      throw new Error(
-        `pCloud returned invalid JSON (HTTP ${response.status})`
-      );
-    }
-
-    console.log(
-      "[storage upload] pCloud response:",
-      data
-    );
-
-    /*
-     * pCloud result 0 = success
-     */
-    if (
-      !response.ok ||
-      Number(data.result) !== 0
-    ) {
-      throw new Error(
-        data.error ||
-          `pCloud upload failed (result ${data.result})`
-      );
-    }
-
-    /*
-     * Extract uploaded file
-     */
-    const metadata =
-      Array.isArray(data.metadata)
-        ? data.metadata[0]
-        : null;
+    const result =
+      await uploadFileToPCloud({
+        file,
+        folderId,
+        objectName,
+        contentType,
+      });
 
     const fileId =
-      metadata?.fileid ||
-      data.fileids?.[0];
+      result.fileId;
 
-    if (!fileId) {
-      throw new Error(
-        "pCloud upload succeeded but no file ID was returned"
-      );
-    }
+    const metadata =
+      result.metadata;
 
     /*
-     * Create storage reference
+     * Create internal storage reference
      */
+
     const ref =
       storageRef(fileId);
 
     console.log(
-      "[storage upload] SUCCESS",
+      "[storage upload] SUCCESS:",
       {
         fileId,
         storageRef: ref,
@@ -356,8 +444,9 @@ export async function POST(request) {
     );
 
     /*
-     * Return result to browser
+     * Return result
      */
+
     return NextResponse.json({
       ok: true,
 
@@ -388,14 +477,21 @@ export async function POST(request) {
       maxBytes:
         MAX_VIDEO_BYTES,
     });
+
   } catch (error) {
-    return jsonError(error);
+    return jsonError(
+      error,
+      400
+    );
   }
 }
 
 /*
- * GET /api/storage/upload
- */
+=========================================================
+GET /api/storage/upload
+=========================================================
+*/
+
 export async function GET(request) {
   const user =
     getCurrentUser(request);
