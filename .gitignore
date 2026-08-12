@@ -1,0 +1,9 @@
+node_modules
+.next
+data/*.db
+data/*.db-*
+public/uploads/*
+!public/uploads/.gitkeep
+.env
+.env.local
+.vercel
