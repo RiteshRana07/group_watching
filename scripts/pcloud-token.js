@@ -1,10 +1,7 @@
 require("dotenv").config({ path: ".env.local" });
 
-const https = require("https");
-
 const clientId = process.env.PCLOUD_CLIENT_ID;
 const clientSecret = process.env.PCLOUD_CLIENT_SECRET;
-
 const code = process.argv[2];
 
 if (!clientId) {
@@ -18,39 +15,104 @@ if (!clientSecret) {
 }
 
 if (!code) {
-  console.error("Usage: node scripts/pcloud-token.js YOUR_ACCESS_CODE");
+  console.error(
+    "Usage: node scripts/pcloud-token.js YOUR_AUTHORIZATION_CODE"
+  );
   process.exit(1);
 }
 
 async function main() {
-  const url = new URL("https://api.pcloud.com/oauth2_token");
+  const url = new URL(
+    "https://api.pcloud.com/oauth2_token"
+  );
 
-  url.searchParams.set("client_id", clientId);
-  url.searchParams.set("client_secret", clientSecret);
-  url.searchParams.set("code", code);
+  url.searchParams.set(
+    "client_id",
+    clientId
+  );
 
-  console.log("Exchanging pCloud authorization code...");
+  url.searchParams.set(
+    "client_secret",
+    clientSecret
+  );
+
+  url.searchParams.set(
+    "code",
+    code
+  );
+
+  console.log(
+    "Exchanging pCloud authorization code..."
+  );
 
   const response = await fetch(url);
 
   const data = await response.json();
 
-  console.log(JSON.stringify(data, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        result: data.result,
+        error: data.error,
+        uid: data.uid,
+        token_type: data.token_type,
+        access_token_received:
+          Boolean(data.access_token),
+      },
+      null,
+      2
+    )
+  );
 
-  if (Number(data.result) !== 0) {
-    console.error("pCloud token exchange failed.");
+  if (
+    !response.ok ||
+    Number(data.result) !== 0
+  ) {
+    console.error(
+      "pCloud token exchange failed:",
+      data.error || data.result
+    );
+
+    process.exit(1);
+  }
+
+  if (!data.access_token) {
+    console.error(
+      "pCloud did not return an access_token."
+    );
+
     process.exit(1);
   }
 
   console.log("\nSUCCESS");
-  console.log("pCloud user ID:", data.uid);
-  console.log("Access token received:", Boolean(data.access_token));
+  console.log(
+    "pCloud user ID:",
+    data.uid
+  );
 
-  console.log("\nAdd this to .env.local:");
-  console.log(`PCLOUD_ACCESS_TOKEN=${data.access_token}`);
+  console.log(
+    "Token type:",
+    data.token_type
+  );
+
+  console.log(
+    "\nAdd this to .env.local:"
+  );
+
+  console.log(
+    `PCLOUD_ACCESS_TOKEN=${data.access_token}`
+  );
+
+  console.log(
+    "\nDo NOT commit this token."
+  );
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error(
+    "Token exchange error:",
+    error
+  );
+
   process.exit(1);
 });

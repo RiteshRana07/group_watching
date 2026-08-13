@@ -1,206 +1,353 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
 import Nav from "../../components/Nav";
-import { useCurrentUser } from "../../lib/use-current-user";
+
+import {
+  useCurrentUser,
+} from "../../lib/use-current-user";
+
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function mb(bytes) {
-  return bytes / (1024 * 1024);
+  return (
+    Number(bytes || 0) /
+    (1024 * 1024)
+  );
 }
 
 function formatMB(bytes) {
-  const value = mb(bytes);
+  const value =
+    mb(bytes);
+
   return value >= 10
     ? value.toFixed(0)
     : value.toFixed(1);
 }
 
-/*
-=========================================================
-UPLOAD VIDEO
-=========================================================
-
-Browser
-   ↓
-Next.js /api/storage/upload
-   ↓
-pCloud uploadfile
-   ↓
-fileId + storageRef
-=========================================================
-*/
+/* =========================================================
+   UPLOAD
+========================================================= */
 
 async function uploadToPCloud(
   file,
   title,
   onProgress
 ) {
-  const formData =
-    new FormData();
-
-  formData.append(
-    "file",
-    file
-  );
+  const formData = new FormData();
 
   formData.append(
     "title",
     title
   );
 
-  /*
-   * IMPORTANT:
-   *
-   * Do NOT manually set Content-Type here.
-   *
-   * Browser automatically creates:
-   *
-   * multipart/form-data;
-   * boundary=...
-   */
-
-  const response =
-    await fetch(
-      "/api/storage/upload",
-      {
-        method: "POST",
-        credentials: "include",
-        body: formData,
-      }
-    );
-
-  /*
-   * Read response as text first.
-   * This prevents JSON.parse errors when
-   * the server returns an HTML/error response.
-   */
-
-  const text =
-    await response.text();
-
-  let data = {};
-
-  try {
-    data = JSON.parse(
-      text || "{}"
-    );
-  } catch {
-    throw new Error(
-      `Server returned invalid JSON (HTTP ${response.status}): ${text.slice(
-        0,
-        300
-      )}`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      data.error ||
-        `Upload failed (HTTP ${response.status})`
-    );
-  }
-
-  if (!data.ok) {
-    throw new Error(
-      data.error ||
-        "Upload failed."
-    );
-  }
-
-  /*
-   * The current route uploads the complete
-   * file before returning the response.
-   *
-   * Therefore we can mark progress as complete.
-   */
-
-  onProgress?.(
-    file.size
+  formData.append(
+    "file",
+    file,
+    file.name
   );
 
-  console.log(
-    "[library] pCloud upload completed:",
-    data
-  );
+  return await new Promise(
+    (resolve, reject) => {
+      const xhr =
+        new XMLHttpRequest();
 
-  return data;
+      /*
+       * Send request to the SAME API.
+       *
+       * We are not changing your backend.
+       */
+      xhr.open(
+        "POST",
+        "/api/storage/upload",
+        true
+      );
+
+      xhr.withCredentials = true;
+
+      /*
+       * =====================================================
+       * REAL-TIME UPLOAD PROGRESS
+       * =====================================================
+       *
+       * This fires continuously while the browser
+       * is sending the video.
+       */
+      xhr.upload.onprogress =
+        (event) => {
+          if (
+            event.lengthComputable
+          ) {
+            const uploaded =
+              event.loaded;
+
+            /*
+             * Send actual uploaded bytes
+             * back to the React state.
+             */
+            onProgress?.(
+              uploaded
+            );
+
+            console.log(
+              "[library] upload progress:",
+              {
+                uploaded:
+                  uploaded,
+
+                total:
+                  event.total,
+
+                percentage:
+                  Math.round(
+                    (
+                      uploaded /
+                      event.total
+                    ) * 100
+                  ),
+              }
+            );
+          }
+        };
+
+      /*
+       * =====================================================
+       * SUCCESS
+       * =====================================================
+       */
+
+      xhr.onload =
+        async () => {
+          const text =
+            xhr.responseText ||
+            "";
+
+          let data = {};
+
+          try {
+            data =
+              JSON.parse(
+                text || "{}"
+              );
+          } catch {
+            reject(
+              new Error(
+                `Server returned invalid JSON (HTTP ${xhr.status}): ${text.slice(
+                  0,
+                  300
+                )}`
+              )
+            );
+
+            return;
+          }
+
+          if (
+            xhr.status < 200 ||
+            xhr.status >= 300
+          ) {
+            reject(
+              new Error(
+                data.error ||
+                `Upload failed (HTTP ${xhr.status})`
+              )
+            );
+
+            return;
+          }
+
+          if (
+            !data.ok
+          ) {
+            reject(
+              new Error(
+                data.error ||
+                "Upload failed."
+              )
+            );
+
+            return;
+          }
+
+          /*
+           * Browser has finished sending the file.
+           *
+           * Set 100% only after the server confirms
+           * that the complete upload operation succeeded.
+           */
+          onProgress?.(
+            file.size
+          );
+
+          console.log(
+            "[library] pCloud upload completed:",
+            data
+          );
+
+          resolve(
+            data
+          );
+        };
+
+      /*
+       * =====================================================
+       * NETWORK ERROR
+       * =====================================================
+       */
+
+      xhr.onerror =
+        () => {
+          reject(
+            new Error(
+              "Network error while uploading video."
+            )
+          );
+        };
+
+      /*
+       * =====================================================
+       * ABORT
+       * =====================================================
+       */
+
+      xhr.onabort =
+        () => {
+          reject(
+            new Error(
+              "Video upload was cancelled."
+            )
+          );
+        };
+
+      /*
+       * =====================================================
+       * START UPLOAD
+       * =====================================================
+       */
+
+      xhr.send(
+        formData
+      );
+    }
+  );
 }
 
-/*
-=========================================================
-LIBRARY PAGE
-=========================================================
-*/
+/* =========================================================
+   LIBRARY PAGE
+========================================================= */
 
 export default function LibraryPage() {
   const user =
     useCurrentUser();
 
-  const [movies, setMovies] =
-    useState(undefined);
+  const [
+    movies,
+    setMovies,
+  ] = useState(
+    undefined
+  );
 
-  const [showForm, setShowForm] =
-    useState(false);
+  const [
+    showForm,
+    setShowForm,
+  ] = useState(
+    false
+  );
 
-  const [title, setTitle] =
-    useState("");
+  const [
+    title,
+    setTitle,
+  ] = useState("");
 
-  const [file, setFile] =
-    useState(null);
+  const [
+    file,
+    setFile,
+  ] = useState(
+    null
+  );
 
-  const [busy, setBusy] =
-    useState(false);
+  const [
+    busy,
+    setBusy,
+  ] = useState(
+    false
+  );
 
-  const [progressBytes, setProgressBytes] =
-    useState(0);
+  const [
+    progressBytes,
+    setProgressBytes,
+  ] = useState(
+    0
+  );
 
-  const [error, setError] =
-    useState("");
+  const [
+    error,
+    setError,
+  ] = useState("");
 
-  /*
-  ========================================================
-  PROGRESS
-  ========================================================
-  */
+  const [
+    success,
+    setSuccess,
+  ] = useState("");
+
+  /* =======================================================
+     PROGRESS
+  ======================================================= */
 
   const progressPercent =
     useMemo(() => {
-      if (!file?.size) {
+      if (
+        !file?.size
+      ) {
         return 0;
       }
 
       return Math.min(
         100,
-        (progressBytes / file.size) * 100
+        (
+          progressBytes /
+          file.size
+        ) * 100
       );
     }, [
       file,
       progressBytes,
     ]);
 
-  /*
-  ========================================================
-  LOAD MOVIES
-  ========================================================
-  */
+  /* =======================================================
+     LOAD MOVIES
+  ======================================================= */
 
   async function loadMovies() {
     try {
-      const res =
+      const response =
         await fetch(
           "/api/movies",
           {
-            cache: "no-store",
-            credentials: "include",
+            cache:
+              "no-store",
+
+            credentials:
+              "include",
           }
         );
 
       const data =
-        await res.json();
+        await response.json();
 
-      if (res.ok) {
+      if (
+        response.ok
+      ) {
         setMovies(
-          data.movies || []
+          data.movies ||
+          []
         );
       } else {
         console.error(
@@ -216,68 +363,71 @@ export default function LibraryPage() {
     }
   }
 
-  /*
-  ========================================================
-  SAVE MOVIE IN DATABASE
-  ========================================================
-  */
+  /* =======================================================
+     SAVE MOVIE IN DATABASE
+  ======================================================= */
 
   async function saveMovie(
     titleValue,
     storageRefValue
   ) {
-    const res =
+    const response =
       await fetch(
         "/api/movies",
         {
-          method: "POST",
-          credentials: "include",
+          method:
+            "POST",
+
+          credentials:
+            "include",
 
           headers: {
             "Content-Type":
               "application/json",
           },
 
-          body: JSON.stringify({
-            title:
-              titleValue,
+          body:
+            JSON.stringify({
+              title:
+                titleValue,
 
-            videoUrl:
-              storageRefValue,
-          }),
+              videoUrl:
+                storageRefValue,
+            }),
         }
       );
 
     const text =
-      await res.text();
+      await response.text();
 
     let data = {};
 
     try {
-      data = JSON.parse(
-        text || "{}"
-      );
+      data =
+        JSON.parse(
+          text || "{}"
+        );
     } catch {
       throw new Error(
-        `Movie API returned invalid JSON (HTTP ${res.status})`
+        `Movie API returned invalid JSON (HTTP ${response.status})`
       );
     }
 
-    if (!res.ok) {
+    if (
+      !response.ok
+    ) {
       throw new Error(
         data.error ||
-          "Couldn't save the video to your library"
+        "Couldn't save the video to your library."
       );
     }
 
     return data.movie;
   }
 
-  /*
-  ========================================================
-  INITIAL LOAD
-  ========================================================
-  */
+  /* =======================================================
+     INITIAL LOAD
+  ======================================================= */
 
   useEffect(() => {
     if (!user) {
@@ -287,10 +437,9 @@ export default function LibraryPage() {
     loadMovies();
 
     /*
-     * Recover pending movie if browser
-     * was interrupted after pCloud upload.
+     * Recover a movie if the browser was interrupted
+     * after pCloud upload but before DB save.
      */
-
     try {
       const pending =
         JSON.parse(
@@ -312,8 +461,12 @@ export default function LibraryPage() {
               "wt_pending_movie"
             );
           })
-          .then(loadMovies)
-          .catch(console.error);
+          .then(
+            loadMovies
+          )
+          .catch(
+            console.error
+          );
       }
     } catch (error) {
       console.error(
@@ -323,25 +476,31 @@ export default function LibraryPage() {
     }
   }, [user]);
 
-  /*
-  ========================================================
-  RESET FORM
-  ========================================================
-  */
+  /* =======================================================
+     RESET
+  ======================================================= */
 
   function resetUpload() {
     setTitle("");
+
     setFile(null);
-    setProgressBytes(0);
+
+    setProgressBytes(
+      0
+    );
+
     setError("");
-    setShowForm(false);
+
+    setSuccess("");
+
+    setShowForm(
+      false
+    );
   }
 
-  /*
-  ========================================================
-  UPLOAD
-  ========================================================
-  */
+  /* =======================================================
+     UPLOAD
+  ======================================================= */
 
   async function handleUpload(
     event
@@ -350,48 +509,56 @@ export default function LibraryPage() {
 
     setError("");
 
-    /*
-     * Validate title
-     */
+    setSuccess("");
 
-    if (!title.trim()) {
+    if (
+      !title.trim()
+    ) {
       setError(
-        "Give the movie a title"
+        "Give the movie a title."
       );
+
       return;
     }
 
-    /*
-     * Validate file
-     */
-
     if (!file) {
       setError(
-        "Choose a video file"
+        "Choose a video file."
       );
+
       return;
     }
 
     setBusy(true);
-    setProgressBytes(0);
+
+    setProgressBytes(
+      0
+    );
 
     try {
-      /*
-       * ====================================================
-       * STEP 1
-       * Upload video to pCloud
-       * ====================================================
-       */
-
       console.log(
         "[library] starting upload:",
         {
-          name: file.name,
-          size: file.size,
-          type: file.type,
+          userId:
+            user?.userId,
+
+          username:
+            user?.username,
+
+          filename:
+            file.name,
+
+          size:
+            file.size,
+
+          type:
+            file.type,
         }
       );
 
+      /*
+       * Upload to the logged-in user's pCloud folder.
+       */
       const result =
         await uploadToPCloud(
           file,
@@ -408,29 +575,20 @@ export default function LibraryPage() {
         result
       );
 
-      /*
-       * ====================================================
-       * STEP 2
-       * Get storage reference
-       * ====================================================
-       */
-
       const storageRef =
         result.storageRef;
 
-      if (!storageRef) {
+      if (
+        !storageRef
+      ) {
         throw new Error(
           "pCloud upload completed but no storage reference was returned."
         );
       }
 
       /*
-       * ====================================================
-       * STEP 3
-       * Save pending state
-       * ====================================================
+       * Save recovery information.
        */
-
       localStorage.setItem(
         "wt_pending_movie",
         JSON.stringify({
@@ -442,24 +600,16 @@ export default function LibraryPage() {
       );
 
       /*
-       * ====================================================
-       * STEP 4
-       * Save movie in database
-       * ====================================================
+       * Save movie in application database.
        */
-
       await saveMovie(
         title.trim(),
         storageRef
       );
 
       /*
-       * ====================================================
-       * STEP 5
-       * Database succeeded
-       * ====================================================
+       * Database succeeded.
        */
-
       localStorage.removeItem(
         "wt_pending_movie"
       );
@@ -468,38 +618,44 @@ export default function LibraryPage() {
         file.size
       );
 
-      /*
-       * Refresh library
-       */
+      setSuccess(
+        `Movie uploaded successfully to ${result.folderName} folder and added to your library.`
+      );
 
       await loadMovies();
 
       /*
-       * Reset form
+       * Clear form but keep success message.
        */
+      setTitle("");
 
-      resetUpload();
+      setFile(null);
 
-    } catch (err) {
+      setProgressBytes(
+        0
+      );
+
+      setShowForm(
+        false
+      );
+    } catch (error) {
       console.error(
         "[library] upload error:",
-        err
+        error
       );
 
       setError(
-        err?.message ||
-          "Something went wrong while uploading"
+        error?.message ||
+        "Something went wrong while uploading."
       );
     } finally {
       setBusy(false);
     }
   }
 
-  /*
-  ========================================================
-  DELETE MOVIE
-  ========================================================
-  */
+  /* =======================================================
+     DELETE MOVIE
+  ======================================================= */
 
   async function handleDelete(
     id
@@ -513,18 +669,23 @@ export default function LibraryPage() {
     }
 
     try {
-      const res =
+      const response =
         await fetch(
           `/api/movies/${id}`,
           {
-            method: "DELETE",
-            credentials: "include",
+            method:
+              "DELETE",
+
+            credentials:
+              "include",
           }
         );
 
-      if (!res.ok) {
+      if (
+        !response.ok
+      ) {
         const data =
-          await res
+          await response
             .json()
             .catch(
               () => ({})
@@ -532,37 +693,32 @@ export default function LibraryPage() {
 
         alert(
           data.error ||
-            "Couldn't remove the movie"
+          "Couldn't remove the movie."
         );
 
         return;
       }
 
       await loadMovies();
-
     } catch (error) {
       alert(
         error?.message ||
-          "Couldn't remove the movie"
+        "Couldn't remove the movie."
       );
     }
   }
 
-  /*
-  ========================================================
-  NOT LOGGED IN
-  ========================================================
-  */
+  /* =======================================================
+     NOT LOGGED IN
+  ======================================================= */
 
   if (!user) {
     return null;
   }
 
-  /*
-  ========================================================
-  UI
-  ========================================================
-  */
+  /* =======================================================
+     UI
+  ======================================================= */
 
   return (
     <main>
@@ -577,6 +733,7 @@ export default function LibraryPage() {
         {/* HEADER */}
 
         <div className="flex items-start justify-between mb-8">
+
           <div>
             <p className="text-xs uppercase tracking-wide text-accent mb-1">
               Your collection
@@ -599,11 +756,20 @@ export default function LibraryPage() {
                   !value
               )
             }
-            className="px-5 py-2.5 bg-accent rounded-lg font-medium hover:opacity-90 whitespace-nowrap"
+            disabled={busy}
+            className="px-5 py-2.5 bg-accent rounded-lg font-medium hover:opacity-90 whitespace-nowrap disabled:opacity-50"
           >
             + Upload movie
           </button>
         </div>
+
+        {/* SUCCESS */}
+
+        {success && (
+          <div className="mb-6 rounded-xl border border-green-800 bg-green-950/30 px-5 py-4 text-sm text-green-400">
+            {success}
+          </div>
+        )}
 
         {/* UPLOAD FORM */}
 
@@ -615,122 +781,132 @@ export default function LibraryPage() {
             className="mb-8 p-6 rounded-xl bg-neutral-900 border border-neutral-800 space-y-4"
           >
 
-            {/* TITLE */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Movie title
+              </label>
 
-            <input
-              className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2"
-              placeholder="Movie title"
-              value={title}
-              disabled={busy}
-              onChange={(e) =>
-                setTitle(
-                  e.target.value
-                )
-              }
-            />
+              <input
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3"
+                placeholder="Enter movie title"
+                value={title}
+                disabled={busy}
+                onChange={(event) =>
+                  setTitle(
+                    event.target
+                      .value
+                  )
+                }
+              />
+            </div>
 
-            {/* FILE */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Video file
+              </label>
 
-            <input
-              type="file"
-              accept="video/mp4,video/webm,video/ogg,video/quicktime,video/x-matroska"
-              disabled={busy}
-              onChange={(e) =>
-                setFile(
-                  e.target.files?.[0] ||
+              <input
+                type="file"
+                accept="video/mp4,video/webm,video/ogg,video/quicktime,video/x-matroska"
+                disabled={busy}
+                onChange={(event) =>
+                  setFile(
+                    event.target
+                      .files?.[0] ||
                     null
-                )
-              }
-              className="w-full text-sm text-neutral-400"
-            />
-
-            {/* SELECTED FILE */}
+                  )
+                }
+                className="w-full text-sm text-neutral-400"
+              />
+            </div>
 
             {file && (
               <p className="text-xs text-neutral-500">
                 Selected:{" "}
-                {file.name} ·{" "}
+                {file.name}
+                {" · "}
                 {formatMB(
                   file.size
-                )}{" "}
-                MB
+                )}
+                {" MB"}
               </p>
             )}
-
-            {/* ERROR */}
 
             {error && (
-              <p className="text-sm text-red-400">
+              <div className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-400">
                 {error}
-              </p>
-            )}
-
-            {/* PROGRESS */}
-
-            {busy && file && (
-              <div className="space-y-2">
-
-                <div className="flex justify-between text-xs text-neutral-400">
-
-                  <span>
-                    Uploading video to pCloud
-                  </span>
-
-                  <span>
-                    {formatMB(
-                      progressBytes
-                    )}{" "}
-                    MB /{" "}
-                    {formatMB(
-                      file.size
-                    )}{" "}
-                    MB (
-                    {Math.round(
-                      progressPercent
-                    )}
-                    %)
-                  </span>
-
-                </div>
-
-                <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
-
-                  <div
-                    className="h-full bg-accent transition-all"
-                    style={{
-                      width: `${progressPercent}%`,
-                    }}
-                  />
-
-                </div>
-
               </div>
             )}
 
-            {/* SUBMIT */}
+            {busy &&
+              file && (
+                <div className="space-y-2">
+
+                  <div className="flex justify-between text-xs text-neutral-400">
+
+                    <span>
+                      Uploading video to pCloud
+                    </span>
+
+                    <span>
+                      {formatMB(
+                        progressBytes
+                      )}
+                      {" MB / "}
+                      {formatMB(
+                        file.size
+                      )}
+                      {" MB ("}
+                      {Math.round(
+                        progressPercent
+                      )}
+                      {"%)"}
+                    </span>
+
+                  </div>
+
+                  <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
+
+                    <div
+                      className="h-full bg-accent transition-all"
+                      style={{
+                        width:
+                          `${progressPercent}%`,
+                      }}
+                    />
+
+                  </div>
+
+                </div>
+              )}
 
             <button
               type="submit"
-              disabled={busy}
-              className="bg-accent px-5 py-2 rounded-lg font-medium hover:opacity-90 disabled:opacity-50"
+              disabled={
+                busy ||
+                !file ||
+                !title.trim()
+              }
+              className="bg-accent px-5 py-2.5 rounded-lg font-medium hover:opacity-90 disabled:opacity-50"
             >
               {busy
                 ? `Uploading ${formatMB(
-                    progressBytes
-                  )} MB / ${formatMB(
-                    file?.size ||
-                      0
-                  )} MB`
+                  progressBytes
+                )} MB / ${formatMB(
+                  file?.size ||
+                  0
+                )} MB`
                 : "Add to library"}
             </button>
 
           </form>
         )}
 
-        {/* EMPTY LIBRARY */}
+        {/* EMPTY */}
 
         {movies &&
-          movies.length === 0 && (
+          movies.length ===
+          0 && (
             <div className="text-center py-20 border border-dashed border-neutral-800 rounded-xl">
 
               <p className="text-lg font-semibold mb-2">
@@ -745,7 +921,9 @@ export default function LibraryPage() {
 
               <button
                 onClick={() =>
-                  setShowForm(true)
+                  setShowForm(
+                    true
+                  )
                 }
                 className="px-5 py-2.5 bg-accent rounded-lg font-medium hover:opacity-90"
               >
@@ -755,10 +933,11 @@ export default function LibraryPage() {
             </div>
           )}
 
-        {/* MOVIE LIBRARY */}
+        {/* MOVIES */}
 
         {movies &&
-          movies.length > 0 && (
+          movies.length >
+          0 && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
               {movies.map(

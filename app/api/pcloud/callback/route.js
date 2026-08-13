@@ -114,7 +114,7 @@ export async function GET(request) {
 
             <h3>Access Token</h3>
 
-            <code>${data.access_token}</code>
+            <code>${data.auth}</code>
 
             <p class="warning">
               Copy this token into your .env.local file.

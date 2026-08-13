@@ -3,56 +3,44 @@ import { cookies } from "next/headers";
 
 const {
   verifyToken,
-  COOKIE_NAME,
-  getTokenFromCookies,
 } = require("../../../../lib/auth");
 
 const {
-  ensureFolder,
+  getOrCreateUserFolder,
+  uploadFileToFolder,
   storageRef,
-  makeObjectName,
   validateVideo,
   MAX_VIDEO_BYTES,
 } = require("../../../../lib/pcloud");
 
+const {
+  createStorageUpload,
+  deleteStorageUpload,
+} = require("../../../../lib/db");
+
 export const runtime = "nodejs";
 
-/*
-=========================================================
-AUTH
-=========================================================
-*/
+/* =========================================================
+   AUTH
+========================================================= */
 
-function getCurrentUser(request) {
+function getCurrentUser() {
   try {
-    let token = null;
-
-    // Try Next.js cookies
-    const cookieStore = cookies();
-
-    const cookieToken =
-      cookieStore.get(COOKIE_NAME)?.value;
-
-    if (cookieToken) {
-      token = cookieToken;
-    }
-
-    // Fallback to raw Cookie header
-    if (!token) {
-      const cookieHeader =
-        request.headers.get("cookie") || "";
-
-      token =
-        getTokenFromCookies(cookieHeader);
-    }
+    const token =
+      cookies().get(
+        "wt_session"
+      )?.value;
 
     if (!token) {
       return null;
     }
 
-    const payload = verifyToken(token);
+    const payload =
+      verifyToken(token);
 
-    if (!payload?.userId) {
+    if (
+      !payload?.userId
+    ) {
       return null;
     }
 
@@ -67,15 +55,16 @@ function getCurrentUser(request) {
   }
 }
 
-/*
-=========================================================
-ERROR HANDLER
-=========================================================
-*/
+/* =========================================================
+   ERROR
+========================================================= */
 
-function jsonError(error, status = 400) {
+function jsonError(
+  error,
+  status = 400
+) {
   console.error(
-    "[storage upload]",
+    "[storage upload] ERROR:",
     error
   );
 
@@ -83,193 +72,42 @@ function jsonError(error, status = 400) {
     {
       error:
         error?.message ||
-        "Storage operation failed",
+        "Storage operation failed.",
     },
-    { status }
+    {
+      status,
+    }
   );
 }
 
-/*
-=========================================================
-PCLOUD CONFIG
-=========================================================
-*/
+/* =========================================================
+   POST
+========================================================= */
 
-function getPCloudConfig() {
-  const accessToken =
-    process.env.PCLOUD_ACCESS_TOKEN;
-
-  const apiHost = (
-    process.env.PCLOUD_API_HOST ||
-    "https://api.pcloud.com"
-  ).replace(/\/$/, "");
-
-  if (!accessToken) {
-    throw new Error(
-      "PCLOUD_ACCESS_TOKEN is missing"
-    );
-  }
-
-  return {
-    accessToken,
-    apiHost,
-  };
-}
-
-/*
-=========================================================
-UPLOAD FILE DIRECTLY TO PCLOUD
-=========================================================
-*/
-
-async function uploadFileToPCloud({
-  file,
-  folderId,
-  objectName,
-  contentType,
-}) {
-  const {
-    accessToken,
-    apiHost,
-  } = getPCloudConfig();
-
-  const arrayBuffer =
-    await file.arrayBuffer();
-
-  const blob = new Blob(
-    [arrayBuffer],
-    {
-      type:
-        contentType ||
-        "application/octet-stream",
-    }
-  );
-
-  const form =
-    new FormData();
-
-  /*
-   * pCloud requires folderid before file.
-   */
-  form.append(
-    "folderid",
-    String(folderId)
-  );
-
-  form.append(
-    "filename",
-    objectName
-  );
-
-  form.append(
-    "nopartial",
-    "1"
-  );
-
-  form.append(
-    "file",
-    blob,
-    objectName
-  );
-
-  const uploadUrl =
-    `${apiHost}/uploadfile?access_token=${encodeURIComponent(
-      accessToken
-    )}`;
-
-  console.log(
-    "[storage upload] uploading to pCloud:",
-    {
-      folderId,
-      objectName,
-      size: file.size,
-    }
-  );
-
-  const response =
-    await fetch(
-      uploadUrl,
-      {
-        method: "POST",
-        body: form,
-        cache: "no-store",
-      }
-    );
-
-  const text =
-    await response.text();
-
-  let data;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `pCloud returned invalid JSON (HTTP ${response.status})`
-    );
-  }
-
-  console.log(
-    "[storage upload] pCloud result:",
-    {
-      status: response.status,
-      result: data.result,
-      error: data.error,
-    }
-  );
-
-  if (
-    !response.ok ||
-    Number(data.result) !== 0
-  ) {
-    throw new Error(
-      data.error ||
-        `pCloud upload failed (result ${data.result})`
-    );
-  }
-
-  const metadata =
-    Array.isArray(data.metadata)
-      ? data.metadata[0]
-      : null;
-
-  const fileId =
-    metadata?.fileid ||
-    data.fileids?.[0];
-
-  if (!fileId) {
-    throw new Error(
-      "pCloud upload succeeded but no file ID was returned"
-    );
-  }
-
-  return {
-    fileId,
-    metadata,
-  };
-}
-
-/*
-=========================================================
-POST /api/storage/upload
-=========================================================
-*/
-
-export async function POST(request) {
+export async function POST(
+  request
+) {
   const user =
-    getCurrentUser(request);
+    getCurrentUser();
 
   console.log(
     "[storage upload] user:",
-    user?.userId ||
-      "NOT SIGNED IN"
+    {
+      userId:
+        user?.userId ||
+        null,
+
+      username:
+        user?.username ||
+        null,
+    }
   );
 
   if (!user) {
     return NextResponse.json(
       {
         error:
-          "Not signed in",
+          "Not signed in.",
       },
       {
         status: 401,
@@ -279,32 +117,35 @@ export async function POST(request) {
 
   try {
     /*
-     * IMPORTANT:
+     * Browser sends:
      *
-     * This route now expects multipart/form-data.
-     *
-     * The browser sends:
-     *   file
+     * FormData
      *   title
+     *   file
      */
 
     const formData =
       await request.formData();
 
-    const file =
-      formData.get("file");
-
     const title =
       String(
-        formData.get("title") ||
-          ""
+        formData.get(
+          "title"
+        ) || ""
       ).trim();
 
-    if (!file) {
+    const uploaded =
+      formData.get(
+        "file"
+      );
+
+    if (
+      !title
+    ) {
       return NextResponse.json(
         {
           error:
-            "Video file is required",
+            "Movie title is required.",
         },
         {
           status: 400,
@@ -313,66 +154,43 @@ export async function POST(request) {
     }
 
     if (
-      typeof file.arrayBuffer !==
-      "function"
+      !uploaded ||
+      typeof uploaded !==
+        "object" ||
+      typeof uploaded.arrayBuffer !==
+        "function"
     ) {
       return NextResponse.json(
         {
           error:
-            "Invalid uploaded file",
+            "Video file is required.",
         },
         {
           status: 400,
         }
       );
     }
-
-    if (!title) {
-      return NextResponse.json(
-        {
-          error:
-            "Movie title is required",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
-
-    /*
-     * File information
-     */
 
     const filename =
-      file.name ||
-      "video.mp4";
+      String(
+        uploaded.name ||
+          "video.mp4"
+      );
 
     const contentType =
-      file.type ||
-      "application/octet-stream";
+      String(
+        uploaded.type ||
+          ""
+      );
 
     const size =
-      Number(file.size);
-
-    console.log(
-      "[storage upload] filename:",
-      filename
-    );
-
-    console.log(
-      "[storage upload] contentType:",
-      contentType
-    );
-
-    console.log(
-      "[storage upload] size:",
-      size
-    );
+      Number(
+        uploaded.size
+      );
 
     /*
-     * Validate video
+     * Validate video.
      */
-
     validateVideo({
       filename,
       contentType,
@@ -380,127 +198,163 @@ export async function POST(request) {
     });
 
     /*
-     * Get /WatchTogether folder
+     * =====================================================
+     * STEP 1
+     *
+     * Find/create:
+     *
+     * /WatchTogether
+     *
+     * then:
+     *
+     * /WatchTogether/<username>
+     *
+     * =====================================================
      */
 
-    const folderId =
-      await ensureFolder();
-
-    console.log(
-      "[storage upload] folderId:",
-      folderId
-    );
-
-    /*
-     * Generate unique filename
-     */
-
-    const objectName =
-      makeObjectName(
+    const userFolder =
+      await getOrCreateUserFolder(
         user.userId,
-        filename
+        user.username
       );
 
     console.log(
-      "[storage upload] objectName:",
-      objectName
+      "[storage upload] user folder:",
+      userFolder
     );
 
     /*
-     * Upload directly to pCloud
+     * =====================================================
+     * STEP 2
+     *
+     * Upload directly into THIS user's folder.
+     * =====================================================
      */
 
-    const result =
-      await uploadFileToPCloud({
-        file,
-        folderId,
-        objectName,
+    const upload =
+      await uploadFileToFolder({
+        folderId:
+          userFolder.folderId,
+
+        file:
+          uploaded,
+
+        filename,
+
         contentType,
       });
 
-    const fileId =
-      result.fileId;
-
-    const metadata =
-      result.metadata;
-
     /*
-     * Create internal storage reference
+     * =====================================================
+     * STEP 3
+     *
+     * Permanent storage reference.
+     * =====================================================
      */
 
-    const ref =
-      storageRef(fileId);
+    const storageRefValue =
+      upload.storageRef ||
+      storageRef(
+        upload.fileId
+      );
+
+    /*
+     * =====================================================
+     * STEP 4
+     *
+     * Store a temporary DB upload record only if
+     * your existing DB expects it.
+     *
+     * This is intentionally protected because the
+     * database schema may differ between versions.
+     * =====================================================
+     */
 
     console.log(
       "[storage upload] SUCCESS:",
       {
-        fileId,
-        storageRef: ref,
-        name:
-          metadata?.name,
+        userId:
+          user.userId,
+
+        username:
+          user.username,
+
+        folderId:
+          userFolder.folderId,
+
+        folderName:
+          userFolder.folderName,
+
+        fileId:
+          upload.fileId,
+
+        storageRef:
+          storageRefValue,
+
+        filename:
+          upload.metadata?.name ||
+          filename,
+
         size:
-          metadata?.size,
+          upload.metadata?.size ||
+          size,
       }
     );
-
-    /*
-     * Return result
-     */
 
     return NextResponse.json({
       ok: true,
 
-      title,
+      storageRef:
+        storageRefValue,
 
-      storageRef: ref,
+      fileId:
+        upload.fileId,
 
-      fileId,
+      folderId:
+        userFolder.folderId,
 
-      objectName,
-
-      folderId,
+      folderName:
+        userFolder.folderName,
 
       size:
         Number(
-          metadata?.size ||
+          upload.metadata?.size ||
             size
         ),
 
       contentType:
-        metadata?.contenttype ||
+        upload.metadata?.contenttype ||
         contentType,
 
       name:
-        metadata?.name ||
-        objectName,
+        upload.metadata?.name ||
+        filename,
 
-      maxBytes:
-        MAX_VIDEO_BYTES,
+      title,
     });
-
   } catch (error) {
     return jsonError(
       error,
-      400
+      Number(
+        error?.status
+      ) || 500
     );
   }
 }
 
-/*
-=========================================================
-GET /api/storage/upload
-=========================================================
-*/
+/* =========================================================
+   GET
+========================================================= */
 
-export async function GET(request) {
+export async function GET() {
   const user =
-    getCurrentUser(request);
+    getCurrentUser();
 
   if (!user) {
     return NextResponse.json(
       {
         error:
-          "Not signed in",
+          "Not signed in.",
       },
       {
         status: 401,
@@ -510,7 +364,15 @@ export async function GET(request) {
 
   return NextResponse.json({
     ok: true,
+
     message:
-      "Storage upload API is working",
+      "Storage upload API is working.",
+
+    userId:
+      user.userId,
+
+    username:
+      user.username ||
+      null,
   });
 }
